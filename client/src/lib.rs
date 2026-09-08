@@ -25,6 +25,7 @@ impl ApplicationPlugin for AccessControlPlugin {
                 id: "system",
                 label: "系统",
             },
+            required_permission: Some("rbac:manage"),
             render: AccessControlPage,
         }]
     }
