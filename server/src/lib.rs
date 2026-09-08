@@ -1,13 +1,25 @@
-use axum::{Router, routing::get};
+mod routes;
+mod service;
+
+pub use service::AccessControlService;
+
+use anyhow::{Context as _, Result};
+use axum::Router;
 use dill::CatalogBuilder;
 
-#[derive(Debug)]
-pub struct AccessControlService;
-
-pub fn register(builder: &mut CatalogBuilder) {
-    builder.add_value(AccessControlService);
+pub fn register(builder: &mut CatalogBuilder) -> Result<()> {
+    builder.add_value(AccessControlService::from_env()?);
+    Ok(())
 }
 
-pub fn router(_catalog: &dill::Catalog) -> anyhow::Result<Router> {
-    Ok(Router::new().route("/api/plugins/rbac/health", get(|| async { "ok" })))
+pub fn service(catalog: &dill::Catalog) -> Result<std::sync::Arc<AccessControlService>> {
+    catalog
+        .get_one::<AccessControlService>()
+        .context("权限服务未注册")
+}
+
+pub fn router(catalog: &dill::Catalog) -> Result<Router> {
+    let access = service(catalog)?;
+    let identity = aio_plugin_identity_server::service(catalog)?;
+    Ok(routes::router(access, identity))
 }

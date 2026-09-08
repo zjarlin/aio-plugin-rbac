@@ -5,9 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+aio-plugin-identity-server = { git = "https://github.com/zjarlin/aio-plugin-identity.git", rev = "e1a022f7906fcab17a6839bfc5fed9904500e574" }
+aio-plugin-rbac-model = { path = "../model" }
 anyhow = "1.0.99"
 axum = "0.8.6"
 dill = "0.15.0"
+sqlx = { version = "0.8.6", default-features = false, features = ["postgres", "runtime-tokio-rustls"] }
 
 [lints]
 workspace = true

@@ -1,0 +1,160 @@
+use std::sync::Arc;
+
+use aio_plugin_identity_server::{IdentityService, SessionContext};
+use aio_plugin_rbac_model::{
+    AccessControlErrorResponse, AccessControlResponse, AccessControlView, AssignRoleRequest,
+    CreateRoleRequest, CreateUserRequest,
+};
+use axum::{
+    Json, Router,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+};
+
+use crate::AccessControlService;
+
+#[derive(Clone)]
+struct AccessControlState {
+    access: Arc<AccessControlService>,
+    identity: Arc<IdentityService>,
+}
+
+pub fn router(access: Arc<AccessControlService>, identity: Arc<IdentityService>) -> Router {
+    Router::new()
+        .route("/api/plugins/rbac/health", get(health))
+        .route("/api/rbac", get(view))
+        .route("/api/rbac/users", post(create_user))
+        .route("/api/rbac/roles", post(create_role))
+        .route("/api/rbac/assignments", post(assign))
+        .with_state(AccessControlState { access, identity })
+}
+
+async fn health() -> &'static str {
+    "ok"
+}
+
+async fn view(
+    State(state): State<AccessControlState>,
+    headers: HeaderMap,
+) -> Result<Json<AccessControlResponse<AccessControlView>>, AccessControlHttpError> {
+    let session = authenticate_manager(&state, &headers).await?;
+    Ok(Json(AccessControlResponse {
+        data: state.access.view(&session.tenant_id).await?,
+    }))
+}
+
+async fn create_user(
+    State(state): State<AccessControlState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateUserRequest>,
+) -> Result<StatusCode, AccessControlHttpError> {
+    let session = authenticate_manager(&state, &headers).await?;
+    let user_id = state
+        .identity
+        .create_user(
+            &session.tenant_id,
+            &request.account,
+            &request.display_name,
+            &request.password,
+        )
+        .await?;
+    state
+        .access
+        .assign(&session.tenant_id, &user_id, "member")
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn create_role(
+    State(state): State<AccessControlState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateRoleRequest>,
+) -> Result<StatusCode, AccessControlHttpError> {
+    let session = authenticate_manager(&state, &headers).await?;
+    state
+        .access
+        .create_role(&session.tenant_id, &request.role_id, &request.permissions)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn assign(
+    State(state): State<AccessControlState>,
+    headers: HeaderMap,
+    Json(request): Json<AssignRoleRequest>,
+) -> Result<StatusCode, AccessControlHttpError> {
+    let session = authenticate_manager(&state, &headers).await?;
+    state
+        .access
+        .assign(&session.tenant_id, &request.user_id, &request.role_id)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn authenticate_manager(
+    state: &AccessControlState,
+    headers: &HeaderMap,
+) -> Result<SessionContext, AccessControlHttpError> {
+    let session = state
+        .identity
+        .authenticate(headers)
+        .await?
+        .ok_or_else(|| AccessControlHttpError::unauthorized("会话无效或已过期"))?;
+    if !session
+        .permissions
+        .iter()
+        .any(|permission| permission == "rbac:manage")
+    {
+        return Err(AccessControlHttpError::forbidden(
+            "当前角色没有权限管理权限",
+        ));
+    }
+    Ok(session)
+}
+
+struct AccessControlHttpError {
+    status: StatusCode,
+    message: String,
+}
+
+impl AccessControlHttpError {
+    fn unauthorized(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            message: message.into(),
+        }
+    }
+
+    fn forbidden(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            message: message.into(),
+        }
+    }
+}
+
+impl<E> From<E> for AccessControlHttpError
+where
+    E: Into<anyhow::Error>,
+{
+    fn from(value: E) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: format!("{:#}", value.into()),
+        }
+    }
+}
+
+impl IntoResponse for AccessControlHttpError {
+    fn into_response(self) -> Response {
+        (
+            self.status,
+            Json(AccessControlErrorResponse {
+                error: self.message,
+            }),
+        )
+            .into_response()
+    }
+}
