@@ -46,6 +46,21 @@ impl AccessControlService {
             .execute(&self.pool)
             .await
             .context("初始化租户成员角色失败")?;
+        for permission in [
+            "plugin:manage",
+            "tenant:manage",
+            "rbac:manage",
+            "dictionary:manage",
+            "file:manage",
+        ] {
+            sqlx::query(
+                "INSERT INTO role_permissions (tenant_id, role_id, permission) SELECT DISTINCT tenant_id, role_id, $1 FROM tenant_member_roles WHERE role_id IN ('platform-admin', 'tenant-admin') ON CONFLICT DO NOTHING",
+            )
+            .bind(permission)
+            .execute(&self.pool)
+            .await
+            .context("补齐系统管理员权限失败")?;
+        }
         Ok(())
     }
 
