@@ -1,5 +1,11 @@
+mod members;
+mod policy;
+mod roles;
 mod routes;
 mod service;
+
+#[cfg(test)]
+mod tests;
 
 pub use service::AccessControlService;
 

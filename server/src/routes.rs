@@ -3,14 +3,14 @@ use std::sync::Arc;
 use aio_plugin_identity_server::{IdentityService, SessionContext};
 use aio_plugin_rbac_model::{
     AccessControlErrorResponse, AccessControlResponse, AccessControlView, AssignRoleRequest,
-    CreateRoleRequest, CreateUserRequest,
+    CreateRoleRequest, CreateUserRequest, UpdateMemberRequest, UpdateMemberRolesRequest,
 };
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
 };
 
 use crate::AccessControlService;
@@ -26,7 +26,13 @@ pub fn router(access: Arc<AccessControlService>, identity: Arc<IdentityService>)
         .route("/api/plugins/rbac/health", get(health))
         .route("/api/rbac", get(view))
         .route("/api/rbac/users", post(create_user))
+        .route(
+            "/api/rbac/users/{id}",
+            put(update_member).delete(remove_member),
+        )
+        .route("/api/rbac/users/{id}/roles", put(set_member_roles))
         .route("/api/rbac/roles", post(create_role))
+        .route("/api/rbac/roles/{id}", put(update_role).delete(delete_role))
         .route("/api/rbac/assignments", post(assign))
         .with_state(AccessControlState { access, identity })
 }
@@ -41,7 +47,10 @@ async fn view(
 ) -> Result<Json<AccessControlResponse<AccessControlView>>, AccessControlHttpError> {
     let session = authenticate_manager(&state, &headers).await?;
     Ok(Json(AccessControlResponse {
-        data: state.access.view(&session.tenant_id).await?,
+        data: state
+            .access
+            .view(&session.tenant_id, &session.user_id)
+            .await?,
     }))
 }
 
@@ -62,7 +71,13 @@ async fn create_user(
         .await?;
     state
         .access
-        .assign(&session.tenant_id, &user_id, "member")
+        .set_member_roles(
+            &session.tenant_id,
+            &session.user_id,
+            &user_id,
+            &["member".into()],
+            true,
+        )
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -75,7 +90,13 @@ async fn create_role(
     let session = authenticate_manager(&state, &headers).await?;
     state
         .access
-        .create_role(&session.tenant_id, &request.role_id, &request.permissions)
+        .save_role(
+            &session.tenant_id,
+            &session.user_id,
+            &request.role_id,
+            &request.permissions,
+            true,
+        )
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -88,7 +109,101 @@ async fn assign(
     let session = authenticate_manager(&state, &headers).await?;
     state
         .access
-        .assign(&session.tenant_id, &request.user_id, &request.role_id)
+        .set_member_roles(
+            &session.tenant_id,
+            &session.user_id,
+            &request.user_id,
+            &[request.role_id],
+            true,
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn update_member(
+    State(state): State<AccessControlState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<UpdateMemberRequest>,
+) -> Result<StatusCode, AccessControlHttpError> {
+    let session = authenticate_manager(&state, &headers).await?;
+    state
+        .access
+        .update_member(
+            &session.tenant_id,
+            &session.user_id,
+            &id,
+            &request.display_name,
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn remove_member(
+    State(state): State<AccessControlState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<StatusCode, AccessControlHttpError> {
+    let session = authenticate_manager(&state, &headers).await?;
+    state
+        .access
+        .remove_member(&session.tenant_id, &session.user_id, &id)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn set_member_roles(
+    State(state): State<AccessControlState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<UpdateMemberRolesRequest>,
+) -> Result<StatusCode, AccessControlHttpError> {
+    let session = authenticate_manager(&state, &headers).await?;
+    state
+        .access
+        .set_member_roles(
+            &session.tenant_id,
+            &session.user_id,
+            &id,
+            &request.roles,
+            false,
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn update_role(
+    State(state): State<AccessControlState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<CreateRoleRequest>,
+) -> Result<StatusCode, AccessControlHttpError> {
+    let session = authenticate_manager(&state, &headers).await?;
+    if id != request.role_id {
+        return Err(AccessControlHttpError::forbidden("角色 ID 不可更改"));
+    }
+    state
+        .access
+        .save_role(
+            &session.tenant_id,
+            &session.user_id,
+            &id,
+            &request.permissions,
+            false,
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn delete_role(
+    State(state): State<AccessControlState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<StatusCode, AccessControlHttpError> {
+    let session = authenticate_manager(&state, &headers).await?;
+    state
+        .access
+        .delete_role(&session.tenant_id, &session.user_id, &id)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
